@@ -1,117 +1,231 @@
-"""
-NOTE: This API server is used only for demonstrating usage of AsyncEngine
-and simple performance benchmarks. It is not intended for production use.
-For production use, we recommend using our OpenAI compatible server.
-We are also not going to accept PRs modifying this file, please
-change `vllm/entrypoints/openai/api_server.py` instead.
-"""
-
-import argparse
+import asyncio
 import json
-import ssl
-from typing import AsyncGenerator
+import os
+import sys
+import importlib
+import inspect
+import re
+from contextlib import asynccontextmanager
+from http import HTTPStatus
+from typing import Any, Set
 
+import fastapi
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from prometheus_client import make_asgi_app
+from starlette.routing import Mount
 
+import vllm
+import vllm.envs as envs
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.async_llm_engine import AsyncLLMEngine
-from vllm.sampling_params import SamplingParams
+from vllm.entrypoints.openai.cli_args import make_arg_parser
+from vllm.entrypoints.openai.protocol import (ChatCompletionRequest,
+                                              ChatCompletionResponse,
+                                              CompletionRequest, ErrorResponse)
+from vllm.entrypoints.openai.serving_chat import OpenAIServingChat
+from vllm.entrypoints.openai.serving_completion import OpenAIServingCompletion
+from vllm.logger import init_logger
 from vllm.usage.usage_lib import UsageContext
-from vllm.utils import random_uuid
+from vllm.entrypoints.openai.tools import OpenAIToolsPrompter
 
-TIMEOUT_KEEP_ALIVE = 5  # seconds.
-app = FastAPI()
-engine = None
+TIMEOUT_KEEP_ALIVE = 5  # seconds
+
+openai_serving_chat: OpenAIServingChat
+openai_serving_completion: OpenAIServingCompletion
+
+vllm_engine: AsyncLLMEngine = None
+vllm_engine_args = None
+logger = init_logger(__name__)
+
+_running_tasks: Set[asyncio.Task[Any]] = set()
+
+
+@asynccontextmanager
+async def lifespan(app: fastapi.FastAPI):
+
+    async def _force_log():
+        while True:
+            await asyncio.sleep(10)
+            await vllm_engine.do_log_stats()
+
+    if not engine_args.disable_log_stats:
+        task = asyncio.create_task(_force_log())
+        _running_tasks.add(task)
+        task.add_done_callback(_running_tasks.remove)
+
+    yield
+
+
+app = fastapi.FastAPI(lifespan=lifespan)
+
+
+def parse_args():
+    parser = make_arg_parser()
+    return parser.parse_args()
+
+
+def _loadServingServices():
+    """ Load or reload the OpenAI service.
+        This function should only be called once on initialization, but may be called to reload the API internals.
+        Reloading must be used for development purpose only. """
+    global openai_serving_chat
+    global openai_serving_completion
+    if openai_serving_chat is not None:
+        del openai_serving_chat
+    if openai_serving_completion is not None:
+        del openai_serving_completion
+
+    openai_tools_prompter = OpenAIToolsPrompter(privileged=args.privileged
+    ) if args.enable_api_tools else None
+    openai_serving_chat = OpenAIServingChat(engine, served_model_names,
+                                            args.response_role,
+                                            args.lora_modules,
+                                            args.chat_template,
+                                            openai_tools_prompter=openai_tools_prompter,
+                                            privileged=args.privileged)
+    openai_serving_completion = OpenAIServingCompletion(
+        engine, served_model_names, args.lora_modules)
+
+
+# Add prometheus asgi middleware to route /metrics requests
+route = Mount("/metrics", make_asgi_app())
+# Workaround for 307 Redirect for /metrics
+route.path_regex = re.compile('^/metrics(?P<path>.*)$')
+app.routes.append(route)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(req: Request, exc: Exception):
+    if "--privileged" in sys.argv:
+        logger.warning("Request error (headers) : %s" % str(dict(req.headers)))
+        logger.warning("Request error (body) : %s" % str((await req.body()).decode("utf-8")))
+    err = openai_serving_chat.create_error_response(message=str(exc))
+    return JSONResponse(err.model_dump(), status_code=HTTPStatus.BAD_REQUEST)
 
 
 @app.get("/health")
 async def health() -> Response:
     """Health check."""
+    await openai_serving_chat.engine.check_health()
     return Response(status_code=200)
 
 
-@app.post("/generate")
-async def generate(request: Request) -> Response:
-    """Generate completion for the request.
+if "--privileged" in sys.argv:
 
-    The request should be a JSON object with the following fields:
-    - prompt: the prompt to use for the generation.
-    - stream: whether to stream the results or not.
-    - other fields: the sampling parameters (See `SamplingParams` for details).
-    """
-    request_dict = await request.json()
-    prompt = request_dict.pop("prompt")
-    stream = request_dict.pop("stream", False)
-    sampling_params = SamplingParams(**request_dict)
-    request_id = random_uuid()
+    @app.get("/privileged")
+    async def privileged() -> Response:
+        """Reload the API internals. Danger !"""
+        logger.warning("privileged called.")
+        _loadServingServices()
+        return Response(status_code=200)
 
-    assert engine is not None
-    results_generator = engine.generate(prompt, sampling_params, request_id)
 
-    # Streaming case
-    async def stream_results() -> AsyncGenerator[bytes, None]:
-        async for request_output in results_generator:
-            prompt = request_output.prompt
-            text_outputs = [
-                prompt + output.text for output in request_output.outputs
-            ]
-            ret = {"text": text_outputs}
-            yield (json.dumps(ret) + "\0").encode("utf-8")
+@app.get("/v1/models")
+async def show_available_models():
+    models = await openai_serving_chat.show_available_models()
+    return JSONResponse(content=models.model_dump())
 
-    if stream:
-        return StreamingResponse(stream_results())
 
-    # Non-streaming case
-    final_output = None
-    async for request_output in results_generator:
-        if await request.is_disconnected():
-            # Abort the request if the client disconnects.
-            await engine.abort(request_id)
-            return Response(status_code=499)
-        final_output = request_output
+@app.get("/version")
+async def show_version():
+    ver = {"version": vllm.__version__}
+    return JSONResponse(content=ver)
 
-    assert final_output is not None
-    prompt = final_output.prompt
-    text_outputs = [prompt + output.text for output in final_output.outputs]
-    ret = {"text": text_outputs}
-    return JSONResponse(ret)
+
+@app.post("/v1/chat/completions")
+async def create_chat_completion(request: ChatCompletionRequest,
+                                 raw_request: Request):
+    generator = await openai_serving_chat.create_chat_completion(
+        request, raw_request)
+    if isinstance(generator, ErrorResponse):
+        return JSONResponse(content=generator.model_dump(),
+                            status_code=generator.code)
+    if request.stream:
+        return StreamingResponse(content=generator,
+                                 media_type="text/event-stream")
+    else:
+        assert isinstance(generator, ChatCompletionResponse)
+        return JSONResponse(content=generator.model_dump())
+
+
+@app.post("/v1/completions")
+async def create_completion(request: CompletionRequest, raw_request: Request):
+    generator = await openai_serving_completion.create_completion(
+        request, raw_request)
+    if isinstance(generator, ErrorResponse):
+        return JSONResponse(content=generator.model_dump(),
+                            status_code=generator.code)
+    if request.stream:
+        return StreamingResponse(content=generator,
+                                 media_type="text/event-stream")
+    else:
+        return JSONResponse(content=generator.model_dump())
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--host", type=str, default=None)
-    parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--ssl-keyfile", type=str, default=None)
-    parser.add_argument("--ssl-certfile", type=str, default=None)
-    parser.add_argument("--ssl-ca-certs",
-                        type=str,
-                        default=None,
-                        help="The CA certificates file")
-    parser.add_argument(
-        "--ssl-cert-reqs",
-        type=int,
-        default=int(ssl.CERT_NONE),
-        help="Whether client certificate is required (see stdlib ssl module's)"
+    args = parse_args()
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=args.allowed_origins,
+        allow_credentials=args.allow_credentials,
+        allow_methods=args.allowed_methods,
+        allow_headers=args.allowed_headers,
     )
-    parser.add_argument(
-        "--root-path",
-        type=str,
-        default=None,
-        help="FastAPI root_path when app is behind a path based routing proxy")
-    parser.add_argument("--log-level", type=str, default="debug")
-    parser = AsyncEngineArgs.add_cli_args(parser)
-    args = parser.parse_args()
-    engine_args = AsyncEngineArgs.from_cli_args(args)
-    engine = AsyncLLMEngine.from_engine_args(
-        engine_args, usage_context=UsageContext.API_SERVER)
+
+    if token := envs.VLLM_API_KEY or args.api_key:
+
+        @app.middleware("http")
+        async def authentication(request: Request, call_next):
+            root_path = "" if args.root_path is None else args.root_path
+            if not request.url.path.startswith(f"{root_path}/v1"):
+                return await call_next(request)
+            if request.headers.get("Authorization") != "Bearer " + token:
+                return JSONResponse(content={"error": "Unauthorized"},
+                                    status_code=401)
+            return await call_next(request)
+
+    for middleware in args.middleware:
+        module_path, object_name = middleware.rsplit(".", 1)
+        imported = getattr(importlib.import_module(module_path), object_name)
+        if inspect.isclass(imported):
+            app.add_middleware(imported)
+        elif inspect.iscoroutinefunction(imported):
+            app.middleware("http")(imported)
+        else:
+            raise ValueError(f"Invalid middleware {middleware}. "
+                             f"Must be a function or a class.")
+
+    logger.info("vLLM API server version %s", vllm.__version__)
+    logger.info("args: %s", args)
+
+    if args.privileged:
+        logger.warning(
+            "\n"
+            "##########################################################################\n"
+            "privileged mode enabled. This should only be used for development purpose.\n"
+            "If It's not the case, you should disable this !\n"
+            "##########################################################################\n"
+        )
+
+    if args.served_model_name is not None:
+        served_model_names = args.served_model_name
+    else:
+        served_model_names = [args.model]
+
+    vllm_engine_args = AsyncEngineArgs.from_cli_args(args)
+    vllm_engine = AsyncLLMEngine.from_engine_args(vllm_engine_args, usage_context=UsageContext.OPENAI_API_SERVER)
+    _loadServingServices()
 
     app.root_path = args.root_path
     uvicorn.run(app,
                 host=args.host,
                 port=args.port,
-                log_level=args.log_level,
+                log_level=args.uvicorn_log_level,
                 timeout_keep_alive=TIMEOUT_KEEP_ALIVE,
                 ssl_keyfile=args.ssl_keyfile,
                 ssl_certfile=args.ssl_certfile,
