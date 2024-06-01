@@ -13,10 +13,13 @@ from vllm.engine.async_llm_engine import AsyncLLMEngine
 from vllm.entrypoints.openai.protocol import (
     ChatCompletionRequest, ChatCompletionResponse,
     ChatCompletionResponseChoice, ChatCompletionResponseStreamChoice,
-    VllmToolsTemplate, ChatCompletionAssistantMessage,
-    ChatCompletionToolMessage, ChatCompletionNamedToolChoiceParam,
+    VllmToolsTemplate, ChatCompletionNamedToolChoiceParam,
     ChatCompletionStreamResponse, ChatMessage, DeltaMessage, ErrorResponse,
     UsageInfo)
+
+from openai.types.chat import (ChatCompletionAssistantMessageParam,
+                               ChatCompletionToolMessageParam)
+
 from vllm.entrypoints.openai.serving_engine import (LoRAModulePath,
                                                     OpenAIServing)
 from vllm.logger import init_logger
@@ -101,22 +104,19 @@ class OpenAIServingChat(OpenAIServing):
                         "Error, the tool_params.call_token_start can't be empty !"
                     )
             else:
-                # No need to allocate it for each requests, if this param is not set, we use the default value.
                 request.tool_params = self.default_tools_template
-            self.openai_tools_prompter.inject_prompt(request)
+
+            self.openai_tools_prompter.inject_prompt(request, self.default_tools_template)
 
             # FIXME : As on dec 2023, the tokenizer only accept "role" and "content" attributes.
             # FIXME : So we manually copy other attributes into "content" when needed.
             for m in request.messages:
-                if isinstance(m, ChatCompletionAssistantMessage
-                              ) and m.tool_calls is not None:
-                    m.content = self.openai_tools_prompter.content_from_assistant(
+                if m["role"] == "assistant" and m.get("tool_calls", None) is not None:
+                    m["content"] = self.openai_tools_prompter.content_from_assistant(
                         m, request.tool_params)
-                elif isinstance(m, ChatCompletionToolMessage
-                                ) and m.tool_call_id is not None:
-                    m.content = self.openai_tools_prompter.content_from_tool(
+                elif m["role"] == "tool":
+                    m["content"] = self.openai_tools_prompter.content_from_tool(
                         m, request.tool_params)
-
         try:
             conversation: List[ConversationMessage] = []
 
@@ -201,7 +201,7 @@ class OpenAIServingChat(OpenAIServing):
         # TODO: handle none openai_tools_prompter
         if isinstance(
                 request.tool_choice,
-                ChatCompletionNamedToolChoiceParam):  # Guided function call
+                dict):  # Guided function call
             tools_capture_texts = [
                 ChatPromptCapture(self.openai_tools_prompter,
                                   request.tool_params)
@@ -399,10 +399,9 @@ class OpenAIServingChat(OpenAIServing):
                                     isinstance(current_capture,
                                                ChatPromptCapture) and
                                 (current_capture.num_calls() > 0)):
-                                tools_calls_list = current_capture.to_ChoiceDeltaToolCallList(
-                                )
+                                tools_calls_list = current_capture.to_ChoiceDeltaToolCallList()
 
-                                if self.privileged:
+                                if self.privileged and tools_calls_list:
                                     for t in tools_calls_list:
                                         logger.warning(
                                             "Calling tools: %s" %
@@ -504,8 +503,7 @@ class OpenAIServingChat(OpenAIServing):
                                                     request.tool_params)
 
                 if isinstance(request.tool_choice,
-                              ChatCompletionNamedToolChoiceParam
-                              ):  # Guided function call
+                              dict):  # Guided function call
                     current_capture.startNamedFunction(request.tool_choice)
                     current_capture.content += output.text
                     current_capture.closeNamedFunction()
@@ -545,8 +543,7 @@ class OpenAIServingChat(OpenAIServing):
 
                 if current_capture.num_calls() > 0:
                     tools_calls_validation = True
-                    tools_calls_list = current_capture.to_ChatCompletionMessageToolCallList(
-                    )
+                    tools_calls_list = current_capture.to_ChatCompletionMessageToolCallList()
                     message = ChatMessage(role=role,
                                           content=None,
                                           tool_calls=tools_calls_list)

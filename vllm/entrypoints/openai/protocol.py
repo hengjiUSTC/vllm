@@ -4,7 +4,11 @@ import time
 from typing import Dict, List, Literal, Optional, Union
 
 import torch
-from openai.types.chat import (ChatCompletionMessageParam)
+from openai.types.chat import (ChatCompletionMessageParam,
+                               ChatCompletionToolParam,
+                               ChatCompletionNamedToolChoiceParam,
+                               ChatCompletionMessageToolCall)
+from openai.types.chat.chat_completion_message_tool_call import Function
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing_extensions import Annotated
 
@@ -66,64 +70,6 @@ class ResponseFormat(OpenAIBaseModel):
     type: Literal["text", "json_object"]
 
 
-class Function(BaseModel):
-    name: str
-    arguments: str
-
-
-class ChatCompletionMessageToolCall(BaseModel):
-    index: int
-    id: str
-    type: str
-    function: Function
-
-class FunctionDefinition(BaseModel):
-    name: str
-    description: str
-    parameters: Optional[Dict[str, object]] = None
-    # See : https://json-schema.org/understanding-json-schema/reference/object
-
-
-class ChatCompletionToolParam(BaseModel):
-    type: str = "function"
-    function: FunctionDefinition = None
-
-
-class ChatCompletionSystemMessage(BaseModel):
-    role: str = "system"
-    content: str
-    name: Optional[str] = None
-
-
-class ChatCompletionUserMessage(BaseModel):
-    role: str = "user"
-    content: Union[str, List[str]]
-    name: Optional[str] = None
-
-
-class ChatCompletionAssistantMessage(BaseModel):
-    role: str = "assistant"
-    content: Optional[str] = None
-    name: Optional[str] = None
-    tool_calls: Optional[List[ChatCompletionMessageToolCall]] = None
-
-
-class ChatCompletionToolMessage(BaseModel):
-    role: str = "tool"
-    content: Optional[str] = None
-    name: Optional[str] = None
-    tool_call_id: str
-
-
-class ChatCompletionNamedFunction(BaseModel):
-    name: str
-
-
-class ChatCompletionNamedToolChoiceParam(BaseModel):
-    function: ChatCompletionNamedFunction
-    type: Optional[Literal["function"]] = None
-
-
 class VllmToolsTemplate(BaseModel):
     # Extension to define the tools template. The strings may be empty but not None
     call_token_start: str = "<tool_call>"
@@ -160,10 +106,7 @@ End of functions instructions.
 class ChatCompletionRequest(OpenAIBaseModel):
     # Ordered by official OpenAI API documentation
     # https://platform.openai.com/docs/api-reference/chat/create
-    messages: List[Union[ChatCompletionSystemMessage,
-                         ChatCompletionAssistantMessage,
-                         ChatCompletionUserMessage,
-                         ChatCompletionToolMessage]]
+    messages: List[ChatCompletionMessageParam]
     model: str
     frequency_penalty: Optional[float] = 0.0
     logit_bias: Optional[Dict[str, float]] = None
@@ -525,7 +468,7 @@ class ChoiceDeltaToolCall(BaseModel):
 class ChatMessage(OpenAIBaseModel):
     role: str
     content: Optional[str] = None
-    tool_calls: Optional[List[ChoiceDeltaToolCall]] = None
+    tool_calls: Optional[List[ChatCompletionMessageToolCall]] = None
 
 
 class ChatCompletionResponseChoice(OpenAIBaseModel):

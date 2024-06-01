@@ -1,11 +1,13 @@
 import json
-from typing import List, Dict, Union
+from typing import Iterable, List, Dict, Union
 from vllm.logger import init_logger
 from vllm.entrypoints.openai.protocol import (
     ChatCompletionRequest, ChatCompletionToolParam, VllmToolsTemplate,
-    ChoiceDeltaToolCall, ChatCompletionMessageToolCall, Function,
-    ChatCompletionAssistantMessage, ChatCompletionToolMessage,
-    ChatCompletionNamedToolChoiceParam)
+    ChoiceDeltaToolCall,
+    ChatCompletionMessageToolCall,
+    ChatCompletionNamedToolChoiceParam,
+    Function)
+from openai.types.chat import ChatCompletionToolMessageParam, ChatCompletionAssistantMessageParam, ChatCompletionMessageToolCallParam
 
 logger = init_logger(__name__)
 
@@ -16,36 +18,34 @@ class ToolsCallsTemplate:
     def __init__(self):
         pass
 
-    def render_toolcalls(self, tool_calls: [ChatCompletionMessageToolCall],
+    def render_toolcalls(self, tool_calls: Iterable[ChatCompletionMessageToolCallParam],
                          tool_params: VllmToolsTemplate) -> str:
         instructions = ""
         if len(tool_params.tool_call_notif_noarg_start) or len(
                 tool_params.tool_call_notif_noarg_end):
             for call in tool_calls:
-                if call.function.arguments is None or len(
-                        call.function.arguments) == 0:
-                    instructions += tool_params.tool_call_notif_noarg_start + " " + call.id + " " + tool_params.tool_call_notif_noarg_end + "\n"
+
+                # TODO(hengjiUSTC): why function is a class not a dict?
+                f = call["function"]
+                arguments = f.arguments
+
+                if arguments is None or len(arguments) == 0:
+                    instructions += tool_params.tool_call_notif_noarg_start + " " + call["id"] + " " + tool_params.tool_call_notif_noarg_end + "\n"
                 else:
-                    instructions += tool_params.tool_call_notif_args_start + " " + call.id + " " + tool_params.tool_call_notif_noarg_end + "\n"
+                    instructions += tool_params.tool_call_notif_args_start + " " + call["id"] + " " + tool_params.tool_call_notif_args_end + " " + arguments + "\n"
         return instructions
 
-    def render_toolresponse(self, message: ChatCompletionToolMessage,
+    def render_toolresponse(self, message: ChatCompletionToolMessageParam,
                             tool_params: VllmToolsTemplate) -> str:
-        return tool_params.response_token_start + str(message.content) + tool_params.response_token_end + "\n"
+        return f"""{tool_params.response_token_start}{str(message["tool_call_id"])}:{str(message['content'])}{tool_params.response_token_end}"""
 
     def render_tool(self, tool: ChatCompletionToolParam,
                     tool_params: VllmToolsTemplate) -> str:
-        if tool.function.parameters is None or len(
-                tool.function.parameters) == 0:
-            return f"""{tool_params.tool_token_start}{{"name": "{tool.function.name}",""" \
-                   f""""description": "{tool.function.description}", "arguments": null}}{tool_params.tool_token_end}\n"""
-        else:
-            return f"""{tool_params.tool_token_start}{{"name": "{tool.function.name}",""" \
-                   f""""description": "{tool.function.description}", "arguments": {{ {tool.function.parameters} }}}}{tool_params.tool_token_end}\n"""
+        return f"""{tool_params.tool_token_start}{tool}{tool_params.tool_token_end}\n"""
 
     def render_toolslist(self, tool_choice: Union[
         str, ChatCompletionNamedToolChoiceParam],
-                         tools_list: [ChatCompletionToolParam],
+                         tools_list: Iterable[ChatCompletionToolParam],
                          tool_params: VllmToolsTemplate) -> str:
         if isinstance(tool_choice, str) and (tool_choice == "auto"
                                              or tool_choice == "none"):
@@ -53,7 +53,7 @@ class ToolsCallsTemplate:
         if tool_choice is not None:  # Guided generation
             for tool in tools_list:
                 # Search if the tool_choice is in the tools_list
-                if tool.type == "function" and tool.function.name == tool_choice:
+                if tool["type"] == "function" and tool["function"]["name"] == tool_choice:
                     instructions = tool_params.function_guided + "\n" + self.render_tool(
                         tool, tool_params=tool_params) + "\n"
                     instructions += tool_params.function_call_instruct
@@ -77,42 +77,39 @@ class OpenAIToolsPrompter:
         self.privileged = privileged
         self.template = ToolsCallsTemplate()
 
-    def content_from_assistant(self, message: ChatCompletionAssistantMessage,
+    def content_from_assistant(self, message: ChatCompletionAssistantMessageParam,
                                tool_params: VllmToolsTemplate) -> str:
-        text = self.template.render_toolcalls(message.tool_calls,
+        text = self.template.render_toolcalls(message.get('tool_calls', []),
                                               tool_params=tool_params)
-        if message.content is None:
+        content = message.get("content", None)
+        if content is None:
             return text
         else:
-            return message.content + "\n" + text
+            return content + "\n" + text
 
-    def content_from_tool(self, message: ChatCompletionToolMessage,
+    def content_from_tool(self, message: ChatCompletionToolMessageParam,
                           tool_params: VllmToolsTemplate) -> str:
         return self.template.render_toolresponse(message,
                                                  tool_params=tool_params)
 
-    def inject_prompt(self, request: ChatCompletionRequest):
+    def inject_prompt(self, request: ChatCompletionRequest, default_tool_params: VllmToolsTemplate):
         """ Generate and inject the prompt for tools calls. """
         if request.tools is not None and len(request.tools):
-            if (isinstance(request.tool_choice,
-                           ChatCompletionNamedToolChoiceParam)):
-                if request.tool_choice.type == "function":
-                    select_tool_choice = request.tool_choice.function.name
-                else:
-                    select_tool_choice = None
+            if request.tool_choice is None:
+                raise ValueError(
+                    "The tool_choice must be set to 'auto' or 'none' to use the tools API.")
             else:
-                select_tool_choice = None
+                select_tool_choice = request.tool_choice
             text_inject = self.template.render_toolslist(
                 tool_choice=select_tool_choice,
                 tools_list=request.tools,
-                tool_params=request.tool_params)
-            if isinstance(request.messages, str):
-                request.messages = text_inject + "\n\n" + request.messages
+                tool_params=request.tool_params if request.tool_params else default_tool_params)
+            if isinstance(request.messages,
+                            List) and len(request.messages) == 0:
+                raise ValueError("empty array. The request.messages list is empty.")
             elif isinstance(request.messages,
                             List) and len(request.messages) >= 1:
-                request.messages[
-                    0].content = text_inject + "\n\n" + request.messages[
-                        0].content
+                request.messages[0]["content"] = text_inject + "\n\n" + request.messages[0].get("content")
 
 
 class ChatPromptCapture:
@@ -168,7 +165,7 @@ class ChatPromptCapture:
     def startNamedFunction(self,
                            tool_choice: ChatCompletionNamedToolChoiceParam):
         # Should not have to be templated since it's defined by the OpenAI reference:
-        self.content = "{ \"name\": \"" + tool_choice.function.name + "\", \"arguments\": "
+        self.content = "{ \"name\": \"" + tool_choice["function"]["name"] + "\", \"arguments\": "
         self.named_function_call = True
         self.prefix_size = 0
         self.is_function_call = True
@@ -245,8 +242,7 @@ class ChatPromptCapture:
             function_call = Function(name=call["name"],
                                      arguments=json.dumps(arguments)
                                      if arguments is not None else "")
-            return ChatCompletionMessageToolCall(index=call_id,
-                                                 id="call_" + call["name"] +
+            return ChatCompletionMessageToolCall(id="call_" + call["name"] +
                                                  "_" + str(call_id),
                                                  type="function",
                                                  function=function_call)
@@ -272,8 +268,10 @@ class ChatPromptCapture:
         return None
 
     def to_ChoiceDeltaToolCallList(
-            self) -> List[Union[ChoiceDeltaToolCall, None]]:
+            self) -> List[ChoiceDeltaToolCall] | None:
         calls_count = self.num_calls()
+        if  calls_count == 0:
+            return None
         tools_calls_list = []
         for call_id in range(calls_count):
             tools_calls_list.append(

@@ -81,14 +81,14 @@ def _loadServingServices():
 
     openai_tools_prompter = OpenAIToolsPrompter(privileged=args.privileged
     ) if args.enable_api_tools else None
-    openai_serving_chat = OpenAIServingChat(engine, served_model_names,
+    openai_serving_chat = OpenAIServingChat(vllm_engine, served_model_names,
                                             args.response_role,
                                             args.lora_modules,
                                             args.chat_template,
                                             openai_tools_prompter=openai_tools_prompter,
                                             privileged=args.privileged)
     openai_serving_completion = OpenAIServingCompletion(
-        engine, served_model_names, args.lora_modules)
+        vllm_engine, served_model_names, args.lora_modules)
 
 
 # Add prometheus asgi middleware to route /metrics requests
@@ -217,9 +217,29 @@ if __name__ == "__main__":
     else:
         served_model_names = [args.model]
 
-    vllm_engine_args = AsyncEngineArgs.from_cli_args(args)
-    vllm_engine = AsyncLLMEngine.from_engine_args(vllm_engine_args, usage_context=UsageContext.OPENAI_API_SERVER)
-    _loadServingServices()
+
+    engine_args = AsyncEngineArgs.from_cli_args(args)
+    engine = AsyncLLMEngine.from_engine_args(
+        engine_args, usage_context=UsageContext.OPENAI_API_SERVER)
+    if args.enable_api_tools:
+        openai_tools_prompter = OpenAIToolsPrompter(privileged=args.privileged)
+        openai_serving_chat = OpenAIServingChat(engine, served_model_names,
+                                                args.response_role,
+                                                args.lora_modules,
+                                                args.chat_template,
+                                                openai_tools_prompter=openai_tools_prompter,
+                                                privileged=args.privileged)
+        openai_serving_completion = OpenAIServingCompletion(
+            engine, served_model_names, args.lora_modules)
+    
+    else:
+        openai_serving_chat = OpenAIServingChat(engine, served_model_names,
+                                                args.response_role,
+                                                args.lora_modules,
+                                                args.chat_template)
+        openai_serving_completion = OpenAIServingCompletion(
+            engine, served_model_names, args.lora_modules)
+
 
     app.root_path = args.root_path
     uvicorn.run(app,

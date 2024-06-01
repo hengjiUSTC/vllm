@@ -88,12 +88,12 @@ def _get_guide_and_mode(
     request: Union[CompletionRequest, ChatCompletionRequest]
 ) -> Union[Tuple[str, GuidedDecodingMode], Tuple[None, None]]:
     if isinstance(request, ChatCompletionRequest) and isinstance(
-            request.tool_choice, ChatCompletionNamedToolChoiceParam):
+            request.tool_choice, dict):
         # Guided generation for tools/functions parameters
-        if request.tool_choice.type == "function":
+        if request.tool_choice["type"] == "function" and request.tools:
             for tool in request.tools:
-                if tool.type == "function" and tool.function.name == request.tool_choice.function.name:
-                    json = json_dumps(tool.function.parameters, sort_keys=True)
+                if tool["type"] == "function" and tool["function"]["name"] == request.tool_choice["function"]["name"]:
+                    json = json_dumps(tool["function"]["parameters"], sort_keys=True)
                     return json, GuidedDecodingMode.JSON
         return None, None
     elif request.guided_json:
