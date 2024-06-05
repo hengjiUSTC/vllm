@@ -18,7 +18,7 @@ from vllm.utils import random_uuid
 
 class OpenAIBaseModel(BaseModel):
     # OpenAI API does not allow extra fields
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
 
 class ErrorResponse(OpenAIBaseModel):
