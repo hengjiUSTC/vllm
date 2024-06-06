@@ -108,24 +108,11 @@ class OpenAIServingChat(OpenAIServing):
 
             self.openai_tools_prompter.inject_prompt(request, self.default_tools_template)
 
-            # FIXME : As on dec 2023, the tokenizer only accept "role" and "content" attributes.
-            # FIXME : So we manually copy other attributes into "content" when needed.
-            for m in request.messages:
-                if m["role"] == "assistant" and m.get("tool_calls", None) is not None:
-                    m["content"] = self.openai_tools_prompter.content_from_assistant(
-                        m, request.tool_params)
-                elif m["role"] == "tool":
-                    m["content"] = self.openai_tools_prompter.content_from_tool(
-                        m, request.tool_params)
         try:
             conversation: List[ConversationMessage] = []
 
             for m in request.messages:
-                messages, _ = self._parse_chat_message_content(
-                    m["role"], m["content"])
-
-                conversation.extend(messages)
-
+                conversation.append(m)
             prompt = self.tokenizer.apply_chat_template(
                 conversation=conversation,
                 tokenize=False,
