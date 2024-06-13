@@ -1,3 +1,4 @@
+import ast
 import json
 from typing import Iterable, List, Dict, Union
 from vllm.logger import init_logger
@@ -109,7 +110,7 @@ class OpenAIToolsPrompter:
                 raise ValueError("empty array. The request.messages list is empty.")
             elif isinstance(request.messages,
                             List) and len(request.messages) >= 1:
-                request.messages[0]["content"] = text_inject + "\n\n" + request.messages[0].get("content")
+                request.messages[0]["content"] = request.messages[0].get("content") + '\n' + text_inject
 
 
 class ChatPromptCapture:
@@ -209,8 +210,8 @@ class ChatPromptCapture:
         count = len(self.calls_list)
         if len(content) > 1:
             try:
-                call_data = json.loads(content)
-            except json.decoder.JSONDecodeError as exc:
+                call_data = ast.literal_eval(content)
+            except Exception as exc:
                 # Simply ignore invalid functions calls...
                 if self.named_function_call:
                     logger.warning(
@@ -240,7 +241,7 @@ class ChatPromptCapture:
             if arguments is None and "parameters" in call:
                 arguments = call["parameters"]
             function_call = Function(name=call["name"],
-                                     arguments=json.dumps(arguments)
+                                     arguments=arguments
                                      if arguments is not None else "")
             return ChatCompletionMessageToolCall(id="call_" + call["name"] +
                                                  "_" + str(call_id),

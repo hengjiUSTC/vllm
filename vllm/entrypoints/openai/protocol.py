@@ -69,38 +69,27 @@ class ResponseFormat(OpenAIBaseModel):
     # type must be "json_object" or "text"
     type: Literal["text", "json_object"]
 
-
 class VllmToolsTemplate(BaseModel):
     # Extension to define the tools template. The strings may be empty but not None
-    call_token_start: str = "<tool_call>"
-    call_token_end: str = "</tool_call>"
-    tool_token_start: str = "<tool>"
-    tool_token_end: str = "</tool>"
-    response_token_start: str = "<tool_response>"
-    response_token_end: str = "</tool_response>"
+    call_token_start: str = "<|reserved004|>"
+    call_token_end: str = "<|reserved003|>"
+    tool_token_start: str = ""
+    tool_token_end: str = ""
+    response_token_start: str = ""
+    response_token_end: str = ""
 
     tool_call_notif_noarg_start: str = ""
-    tool_call_notif_noarg_end: str = "was called with no argument"
+    tool_call_notif_noarg_end: str = ""
     tool_call_notif_args_start: str = ""
-    tool_call_notif_args_end: str = "was called with arguments"
+    tool_call_notif_args_end: str = ""
 
     function_guided: str = "You must call the following function at least one time to answer the question. You may call it multiple times if needed:"
 
-    function_list_start: str = """The following is a list of external functions that may be called to complete certain tasks:"""
+    function_list_start: str = """Available functions are:\n"""
 
-    function_list_end: str = """End of list
+    function_list_end: str = ""
 
-* Whenever the user asks you something, you can either respond directly or invoke a function if it is present in the previous list.
-* The decision to invoke a function is yours, only invoke a function if it is necessary to answer the user's question
-* If you need to call at least one function, your message should contain only a list of function calls and nothing else; the function calls are the response."""
-
-    function_call_instruct: str = """For each function call return a valid json object (using quotes) with function name and arguments within <tool_call> { } </tool_call> XML tags as follows::
-* With arguments:
-<tool_call>{ "name": "function_name", "arguments": {"argument_name": "value"} }</tool_call>
-* Without arguments:
-<tool_call>{ "name": "function_name", "arguments": null }</tool_call>
-End of functions instructions.
-"""
+    function_call_instruct: str = ""
 
 
 class ChatCompletionRequest(OpenAIBaseModel):
