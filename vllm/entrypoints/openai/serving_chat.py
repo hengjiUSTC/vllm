@@ -109,13 +109,24 @@ class OpenAIServingChat(OpenAIServing):
             self.openai_tools_prompter.inject_prompt(request, self.default_tools_template)
         try:
             conversation: List[ConversationMessage] = []
+            dict_msgs = []
             for m in request.messages:
                 messages, _ = self._parse_chat_message_content(
                     m["role"], m["content"])
                 conversation.extend(messages)
 
+                if m['role'] == 'assistant' and 'tool_calls' in m:
+                    tool_calls = []
+                    for tool in m['tool_calls']:
+                        tool_calls.append({'id': tool['id'], 'function': tool['function'].dict()})
+                    copym = m.copy()
+                    copym['tool_calls'] = tool_calls
+                    dict_msgs.append(copym)
+                else:
+                    dict_msgs.append(m)
+
             prompt = self.tokenizer.apply_chat_template(
-                conversation=request.messages,
+                conversation=dict_msgs,
                 tokenize=False,
                 add_generation_prompt=request.add_generation_prompt,
             )
