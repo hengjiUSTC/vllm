@@ -1,5 +1,7 @@
 import ast
 import json
+import uuid
+import base64
 from typing import Iterable, List, Dict, Union
 from vllm.logger import init_logger
 from vllm.entrypoints.openai.protocol import (
@@ -42,7 +44,7 @@ class ToolsCallsTemplate:
 
     def render_tool(self, tool: ChatCompletionToolParam,
                     tool_params: VllmToolsTemplate) -> str:
-        return f"""{tool_params.tool_token_start}{tool}{tool_params.tool_token_end}\n"""
+        return f"""{tool_params.tool_token_start}{tool['function']}{tool_params.tool_token_end}\n"""
 
     def render_toolslist(self, tool_choice: Union[
         str, ChatCompletionNamedToolChoiceParam],
@@ -110,7 +112,10 @@ class OpenAIToolsPrompter:
                 raise ValueError("empty array. The request.messages list is empty.")
             elif isinstance(request.messages,
                             List) and len(request.messages) >= 1:
-                request.messages[0]["content"] = request.messages[0].get("content") + '\n' + text_inject
+                if request.messages[0]['role'] == 'system':
+                    request.messages[0]["content"] = request.messages[0].get("content") + '\n' + text_inject
+                else:
+                    request.messages.insert(0, {'role': 'system', 'content': text_inject})
 
 
 class ChatPromptCapture:
@@ -243,8 +248,7 @@ class ChatPromptCapture:
             function_call = Function(name=call["name"],
                                      arguments=arguments
                                      if arguments is not None else "")
-            return ChatCompletionMessageToolCall(id="call_" + call["name"] +
-                                                 "_" + str(call_id),
+            return ChatCompletionMessageToolCall(id="call_" + base64.urlsafe_b64encode(uuid.uuid4().bytes).rstrip(b'=').decode('ascii'),
                                                  type="function",
                                                  function=function_call)
         return None

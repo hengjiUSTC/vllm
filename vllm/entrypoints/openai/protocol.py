@@ -85,7 +85,7 @@ class VllmToolsTemplate(BaseModel):
 
     function_guided: str = "You must call the following function at least one time to answer the question. You may call it multiple times if needed:"
 
-    function_list_start: str = """Available functions are:\n"""
+    function_list_start: str = """Available functions:"""
 
     function_list_end: str = ""
 
