@@ -50,7 +50,7 @@ class ToolsCallsTemplate:
         str, ChatCompletionNamedToolChoiceParam],
                          tools_list: Iterable[ChatCompletionToolParam],
                          tool_params: VllmToolsTemplate) -> str:
-        if isinstance(tool_choice, str) and (tool_choice == "auto"
+        if isinstance(tool_choice, str) and (tool_choice == "auto" or tool_choice == "required"
                                              or tool_choice == "none"):
             tool_choice = None
         if tool_choice is not None:  # Guided generation
