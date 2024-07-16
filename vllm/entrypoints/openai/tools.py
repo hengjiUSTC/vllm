@@ -56,17 +56,17 @@ class ToolsCallsTemplate:
         if tool_choice is not None:  # Guided generation
             for tool in tools_list:
                 # Search if the tool_choice is in the tools_list
-                if tool["type"] == "function" and tool["function"]["name"] == tool_choice:
+                if tool["type"] == "function" and tool["function"]["name"] == tool_choice.function.name:
                     instructions = tool_params.function_guided + "\n" + self.render_tool(
                         tool, tool_params=tool_params) + "\n"
                     instructions += tool_params.function_call_instruct
-                    return instructions
+                    return tool_params.function_list_start + instructions + tool_params.function_list_end + "\n" + tool_params.function_call_instruct
             return ""  # Tool not found. What should we do ?
         else:
-            instructions = tool_params.function_list_start + "\n"
+            instructions = tool_params.function_list_start
             for tool in tools_list:
                 instructions += self.render_tool(tool, tool_params=tool_params)
-            instructions += "\n" + tool_params.function_list_end + "\n"
+            instructions += tool_params.function_list_end + "\n"
             instructions += tool_params.function_call_instruct
             return instructions
 

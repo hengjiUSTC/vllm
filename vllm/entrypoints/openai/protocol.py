@@ -6,7 +6,6 @@ from typing import Dict, List, Literal, Optional, Union
 import torch
 from openai.types.chat import (ChatCompletionMessageParam,
                                ChatCompletionToolParam,
-                               ChatCompletionNamedToolChoiceParam,
                                ChatCompletionMessageToolCall)
 from openai.types.chat.chat_completion_message_tool_call import Function
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -19,6 +18,13 @@ from vllm.utils import random_uuid
 class OpenAIBaseModel(BaseModel):
     # OpenAI API does not allow extra fields
     model_config = ConfigDict(extra="ignore")
+
+class ChatCompletionNamedFunction(OpenAIBaseModel):
+    name: str
+
+class ChatCompletionNamedToolChoiceParam(OpenAIBaseModel):
+    function: ChatCompletionNamedFunction
+    type: Literal["function"] = "function"
 
 
 class ErrorResponse(OpenAIBaseModel):
