@@ -26,6 +26,9 @@ class ChatCompletionNamedToolChoiceParam(OpenAIBaseModel):
     function: ChatCompletionNamedFunction
     type: Literal["function"] = "function"
 
+class ToolChoiceDict(BaseModel):
+    type: str
+    function: Dict[str, str]
 
 class ErrorResponse(OpenAIBaseModel):
     object: str = "error"
@@ -122,8 +125,12 @@ class ChatCompletionRequest(OpenAIBaseModel):
 
     # doc: begin-chat-completion-sampling-params
     tools: Optional[List[ChatCompletionToolParam]] = None
-    tool_choice: Optional[Union[Literal["auto", "none"],
-                                ChatCompletionNamedToolChoiceParam]] = "auto"
+    # tool_choice: Optional[Union[Literal["auto", "none"],
+                                # ChatCompletionNamedToolChoiceParam]] = "auto"
+
+    tool_choice: Optional[Union[Literal["auto", "none", "required"],
+                            ChatCompletionNamedToolChoiceParam,
+                            ToolChoiceDict]] = "auto"
     # Additional parameters supported by vLLM
     tool_params: Optional[VllmToolsTemplate] = None
     best_of: Optional[int] = None
