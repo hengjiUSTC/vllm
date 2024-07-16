@@ -7,11 +7,11 @@ from openai import OpenAI
 import datetime
 import json
 
-client = OpenAI(api_key="EMPTY", base_url="http://localhost:8000/v1")
+client = OpenAI(api_key="123", base_url="http://localhost:8001/v1")
 models = client.models.list()
 model = models.data[0].id
 temperature = 0.1
-stream = True
+stream = False
 
 # Can be used to reset the tokenizer and functions templates. Vllm have to be launch with --privileged argument:
 # import httpx
@@ -156,8 +156,9 @@ def run_conversation(question: str, tool_choice_param):
                                               tools=tools,
                                               stream=stream,
                                               tool_choice=tool_choice_param,
-                                              temperature=temperature,
-                                              extra_body=EXTRA_BODY_OPENAI)
+                                              temperature=temperature)
+                                              #temperature=temperature,
+                                              #extra_body=EXTRA_BODY_OPENAI)
     response_message = ""
     tool_calls = []
     if stream:
@@ -219,7 +220,7 @@ def run_conversation(question: str, tool_choice_param):
                 "content": function_response,
             })  # extend conversation with function response
         second_response = client.chat.completions.create(
-            model=model, messages=messages, extra_body=EXTRA_BODY_OPENAI
+            model=model, messages=messages #, extra_body=EXTRA_BODY_OPENAI
         )  # get a new response from the model where it can see the function response
 
         for it_msg, msg in enumerate(messages):
