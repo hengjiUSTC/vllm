@@ -112,7 +112,8 @@ class OpenAIServingChat(OpenAIServing):
             dict_msgs = []
             for m in request.messages:
                 messages, _ = self._parse_chat_message_content(
-                    m["role"], m["content"])
+                    m["role"], m.get("content", None)
+                )
                 conversation.extend(messages)
 
                 if m['role'] == 'assistant' and 'tool_calls' in m:
