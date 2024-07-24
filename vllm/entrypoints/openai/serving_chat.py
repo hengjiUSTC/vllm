@@ -1,12 +1,14 @@
 import asyncio
 import codecs
 import time
+import copy
 from typing import (AsyncGenerator, AsyncIterator, Awaitable, Iterable, List,
                     Optional, Tuple, TypedDict, Union, final)
 
 import asyncio
 from fastapi import Request
 from openai.types.chat import (ChatCompletionContentPartParam,
+                               ChatCompletionMessageParam,
                                ChatCompletionRole)
 
 from vllm.engine.async_llm_engine import AsyncLLMEngine
@@ -59,6 +61,7 @@ class OpenAIServingChat(OpenAIServing):
         self.response_role = response_role
         self.default_tools_template = VllmToolsTemplate()
         self.openai_tools_prompter = openai_tools_prompter
+        self.original_prompt_token_ids: Optional[List[int]] = None
 
 
     def _parse_chat_message_content(
@@ -96,6 +99,12 @@ class OpenAIServingChat(OpenAIServing):
         error_check_ret = await self._check_model(request)
         if error_check_ret is not None:
             return error_check_ret
+            
+        original_messages = request.messages
+        if not hasattr(request, 'stream') or request.stream == False:
+            original_messages = [message.copy() for message in request.messages]
+            #original_messages = [ChatCompletionMessageParam(**message.dict(deep=True)) for message in request.messages]
+            #original_messages = copy.deepcopy(request.messages)
 
         if self.openai_tools_prompter is not None:
             if isinstance(request.tool_params, VllmToolsTemplate):
@@ -131,6 +140,7 @@ class OpenAIServingChat(OpenAIServing):
                 tokenize=False,
                 add_generation_prompt=request.add_generation_prompt,
             )
+            original_prompt = self.generate_prompt(original_messages,request.add_generation_prompt)
         except Exception as e:
             logger.error("Error in applying chat template from request: %s", e)
             return self.create_error_response(str(e))
@@ -147,8 +157,9 @@ class OpenAIServingChat(OpenAIServing):
         request_id = f"cmpl-{random_uuid()}"
         try:
             # Tokenize/detokenize depending on prompt format (string/token list)
-            prompt_ids, prompt_text = self._validate_prompt_and_tokenize(
-                request, prompt=prompt)
+            prompt_ids, prompt_text = self._validate_prompt_and_tokenize(request, prompt=prompt)
+            original_prompt_ids, original_prompt_text = self._validate_prompt_and_tokenize(request, prompt=original_prompt)
+            self.original_prompt_token_ids = original_prompt_ids
             sampling_params = request.to_sampling_params()
             lora_request = self._maybe_get_lora(request)
             decoding_config = await self.engine.get_decoding_config()
@@ -419,6 +430,11 @@ class OpenAIServingChat(OpenAIServing):
                                     created=created_time,
                                     choices=[choice_data],
                                     model=model_name)
+
+                                prompt_tokens=len(res.prompt_token_ids),
+                                if self.original_prompt_token_ids is not None :
+                                    num_original_prompt_tokens = len(self.original_prompt_token_ids)
+                                    prompt_tokens = num_original_prompt_tokens
                                 chunk.usage = UsageInfo(
                                     prompt_tokens=len(res.prompt_token_ids),
                                     completion_tokens=len(output.token_ids),
@@ -431,6 +447,9 @@ class OpenAIServingChat(OpenAIServing):
                             else:
                                 # Send the finish response for each request.n only once
                                 prompt_tokens = len(res.prompt_token_ids)
+                                if self.original_prompt_token_ids is not None :
+                                    num_original_prompt_tokens = len(self.original_prompt_token_ids)
+                                    prompt_tokens = num_original_prompt_tokens
                                 final_usage = UsageInfo(
                                     prompt_tokens=prompt_tokens,
                                     completion_tokens=previous_num_tokens[i],
@@ -573,6 +592,9 @@ class OpenAIServingChat(OpenAIServing):
                 choice.message.content = full_message
 
         num_prompt_tokens = len(final_res.prompt_token_ids)
+        if self.original_prompt_token_ids is not None :
+            num_original_prompt_tokens = len(self.original_prompt_token_ids)
+            num_prompt_tokens = num_original_prompt_tokens
         num_generated_tokens = sum(
             len(output.token_ids) for output in final_res.outputs)
         usage = UsageInfo(
@@ -621,3 +643,34 @@ class OpenAIServingChat(OpenAIServing):
         else:
             logger.warning(
                 "No chat template provided. Chat API will not work.")
+
+    def generate_prompt(self, messages:List[ChatCompletionMessageParam], add_generation_prompt:bool) -> str:
+        dict_msgs = []
+        for m in messages:
+            if m['role'] == 'assistant' and 'tool_calls' in m:
+                tool_calls = []
+                for tool in m['tool_calls']:
+                    tool_calls.append({'id': tool['id'], 'function': tool['function']})
+                copym = m.copy()
+                copym['tool_calls'] = tool_calls
+                dict_msgs.append(copym)
+            else:
+                dict_msgs.append(m)
+        
+        prompt = self.tokenizer.apply_chat_template(
+            conversation=dict_msgs,
+            tokenize=False,
+            add_generation_prompt=add_generation_prompt,
+        )
+    
+        return prompt
+    def copy_message(message):
+        if isinstance(message, dict):
+            # 如果已经是字典，直接创建一个浅拷贝
+            return ChatCompletionMessageParam(**message)
+        elif hasattr(message, 'dict'):
+            # 如果是 Pydantic 模型，使用 dict() 方法
+            return ChatCompletionMessageParam(**message.dict(deep=True))
+        else:
+            # 如果既不是字典也不是 Pydantic 模型，抛出异常
+            raise TypeError(f"Unexpected message type: {type(message)}")

@@ -101,6 +101,7 @@ class VllmToolsTemplate(BaseModel):
     function_call_instruct: str = ""
 
 
+
 class ChatCompletionRequest(OpenAIBaseModel):
     # Ordered by official OpenAI API documentation
     # https://platform.openai.com/docs/api-reference/chat/create
