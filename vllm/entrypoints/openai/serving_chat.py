@@ -17,7 +17,7 @@ from vllm.entrypoints.openai.protocol import (
     ChatCompletionResponseChoice, ChatCompletionResponseStreamChoice,
     VllmToolsTemplate, ChatCompletionNamedToolChoiceParam,
     ChatCompletionStreamResponse, ChatMessage, DeltaMessage, ErrorResponse,
-    UsageInfo)
+    UsageInfo, ToolChoiceDict)
 
 from openai.types.chat import (ChatCompletionAssistantMessageParam,
                                ChatCompletionToolMessageParam)
@@ -121,6 +121,8 @@ class OpenAIServingChat(OpenAIServing):
             dict_msgs = []
             for m in request.messages:
                 messages, _ = self._parse_chat_message_content(
+
+                    # TODO: Check or Add handler for None OR ""
                     m["role"], m.get("content", None)
                 )
                 conversation.extend(messages)
@@ -140,6 +142,19 @@ class OpenAIServingChat(OpenAIServing):
                 tokenize=False,
                 add_generation_prompt=request.add_generation_prompt,
             )
+
+            # Check if the request is required or specified function calling
+            # If so, append the <reserved004> -> 14 to the propmt to enforce model enter fc mode
+            # No need to append this to the original_prompt for calculating the output length
+            # TODO: update the training data to ensure the function "name" comes at the first place
+            logger.info("\n########## Checking the tool choice ###########")
+            logger.info(f"Tool Choice: {request.tool_choice}")
+            logger.info(f"Dict Msgs: {dict_msgs}")
+            if request.tool_choice == "required" or isinstance(request.tool_choice, ToolChoiceDict) or isinstance(request.tool_choice, ChatCompletionNamedToolChoiceParam):
+                prompt += "<|reserved004|>"
+                logger.info("\n########## Enforced Enter Funcion Call Mode ###########")
+                logger.info(f"\n- Tool Choice: {request.tool_choice}")
+    
             original_prompt = self.generate_prompt(original_messages,request.add_generation_prompt)
         except Exception as e:
             logger.error("Error in applying chat template from request: %s", e)
