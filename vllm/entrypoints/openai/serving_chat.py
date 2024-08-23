@@ -515,6 +515,16 @@ class OpenAIServingChat(OpenAIServing):
 
         choices = []
         role = self.get_chat_request_role(request)
+        
+        # jiaochunyu 0824 todo 
+        try:
+            if request.tool_choice == "required" or isinstance(request.tool_choice, ToolChoiceDict) or isinstance(request.tool_choice, ChatCompletionNamedToolChoiceParam):
+                final_res.outputs[0].text = '<|reserved004|>' + final_res.outputs[0].text
+                final_res.outputs[0].token_ids.insert(0,14)
+                final_res.prompt.replace('<|reserved004|>','')
+                final_res.prompt_token_ids = final_res.prompt_token_ids[:-1]
+        except Exception as e:
+            print('debug code' + e)
 
         for output in final_res.outputs:
             token_ids = output.token_ids
