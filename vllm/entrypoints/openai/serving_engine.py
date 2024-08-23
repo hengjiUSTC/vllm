@@ -8,6 +8,8 @@ from pydantic import Field
 from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 from typing_extensions import Annotated
 
+from vllm.transformers_utils.tokenizer import get_tokenizer, PreTrainedTokenizer, PreTrainedTokenizerFast
+
 from vllm.engine.async_llm_engine import AsyncLLMEngine
 from vllm.entrypoints.openai.protocol import (ChatCompletionRequest,
                                               CompletionRequest, ErrorResponse,
@@ -33,7 +35,9 @@ class OpenAIServing:
                  engine: AsyncLLMEngine,
                  served_model_names: List[str],
                  lora_modules: Optional[List[LoRAModulePath]],
-                 await_post_init: Optional[Awaitable[Any]] = None):
+                 await_post_init: Optional[Awaitable[Any]] = None,
+                 privileged: bool = False):
+        self.privileged = privileged
         self.engine = engine
         self.served_model_names = served_model_names
         if lora_modules is None:
@@ -145,6 +149,8 @@ class OpenAIServing:
             message: str,
             err_type: str = "BadRequestError",
             status_code: HTTPStatus = HTTPStatus.BAD_REQUEST) -> ErrorResponse:
+        if self.privileged:
+            logger.warning("Error response : %s" % message)
         return ErrorResponse(message=message,
                              type=err_type,
                              code=status_code.value)

@@ -7,7 +7,7 @@
 
 #################### BASE BUILD IMAGE ####################
 # prepare basic build environment
-FROM nvidia/cuda:12.4.1-devel-ubuntu22.04 AS dev
+FROM  ml-a100-cn-beijing.cr.volces.com/dev_env/nvidia/cuda:12.4.1-devel-ubuntu22.04 AS dev
 
 RUN apt-get update -y \
     && apt-get install -y python3-pip git
@@ -106,7 +106,7 @@ RUN pip --verbose wheel flash-attn==${FLASH_ATTN_VERSION} \
 
 #################### vLLM installation IMAGE ####################
 # image with vLLM installed
-FROM nvidia/cuda:12.4.1-base-ubuntu22.04 AS vllm-base
+FROM ml-a100-cn-beijing.cr.volces.com/dev_env/nvidia/cuda:12.4.1-base-ubuntu22.04 AS vllm-base
 WORKDIR /vllm-workspace
 
 RUN apt-get update -y \

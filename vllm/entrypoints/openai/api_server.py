@@ -1,4 +1,7 @@
 import asyncio
+import json
+import os
+import sys
 import importlib
 import inspect
 import re
@@ -27,11 +30,15 @@ from vllm.entrypoints.openai.serving_chat import OpenAIServingChat
 from vllm.entrypoints.openai.serving_completion import OpenAIServingCompletion
 from vllm.logger import init_logger
 from vllm.usage.usage_lib import UsageContext
+from vllm.entrypoints.openai.tools import OpenAIToolsPrompter
 
 TIMEOUT_KEEP_ALIVE = 5  # seconds
 
 openai_serving_chat: OpenAIServingChat
 openai_serving_completion: OpenAIServingCompletion
+
+vllm_engine: AsyncLLMEngine = None
+vllm_engine_args = None
 logger = init_logger(__name__)
 
 _running_tasks: Set[asyncio.Task[Any]] = set()
@@ -43,7 +50,7 @@ async def lifespan(app: fastapi.FastAPI):
     async def _force_log():
         while True:
             await asyncio.sleep(10)
-            await engine.do_log_stats()
+            await vllm_engine.do_log_stats()
 
     if not engine_args.disable_log_stats:
         task = asyncio.create_task(_force_log())
@@ -61,6 +68,29 @@ def parse_args():
     return parser.parse_args()
 
 
+def _loadServingServices():
+    """ Load or reload the OpenAI service.
+        This function should only be called once on initialization, but may be called to reload the API internals.
+        Reloading must be used for development purpose only. """
+    global openai_serving_chat
+    global openai_serving_completion
+    if openai_serving_chat is not None:
+        del openai_serving_chat
+    if openai_serving_completion is not None:
+        del openai_serving_completion
+
+    openai_tools_prompter = OpenAIToolsPrompter(privileged=args.privileged
+    ) if args.enable_api_tools else None
+    openai_serving_chat = OpenAIServingChat(vllm_engine, served_model_names,
+                                            args.response_role,
+                                            args.lora_modules,
+                                            args.chat_template,
+                                            openai_tools_prompter=openai_tools_prompter,
+                                            privileged=args.privileged)
+    openai_serving_completion = OpenAIServingCompletion(
+        vllm_engine, served_model_names, args.lora_modules)
+
+
 # Add prometheus asgi middleware to route /metrics requests
 route = Mount("/metrics", make_asgi_app())
 # Workaround for 307 Redirect for /metrics
@@ -69,7 +99,10 @@ app.routes.append(route)
 
 
 @app.exception_handler(RequestValidationError)
-async def validation_exception_handler(_, exc):
+async def validation_exception_handler(req: Request, exc: Exception):
+    if "--privileged" in sys.argv:
+        logger.warning("Request error (headers) : %s" % str(dict(req.headers)))
+        logger.warning("Request error (body) : %s" % str((await req.body()).decode("utf-8")))
     err = openai_serving_chat.create_error_response(message=str(exc))
     return JSONResponse(err.model_dump(), status_code=HTTPStatus.BAD_REQUEST)
 
@@ -79,6 +112,16 @@ async def health() -> Response:
     """Health check."""
     await openai_serving_chat.engine.check_health()
     return Response(status_code=200)
+
+
+if "--privileged" in sys.argv:
+
+    @app.get("/privileged")
+    async def privileged() -> Response:
+        """Reload the API internals. Danger !"""
+        logger.warning("privileged called.")
+        _loadServingServices()
+        return Response(status_code=200)
 
 
 @app.get("/v1/models")
@@ -160,19 +203,43 @@ if __name__ == "__main__":
     logger.info("vLLM API server version %s", vllm.__version__)
     logger.info("args: %s", args)
 
+    if args.privileged:
+        logger.warning(
+            "\n"
+            "##########################################################################\n"
+            "privileged mode enabled. This should only be used for development purpose.\n"
+            "If It's not the case, you should disable this !\n"
+            "##########################################################################\n"
+        )
+
     if args.served_model_name is not None:
         served_model_names = args.served_model_name
     else:
         served_model_names = [args.model]
+
+
     engine_args = AsyncEngineArgs.from_cli_args(args)
     engine = AsyncLLMEngine.from_engine_args(
         engine_args, usage_context=UsageContext.OPENAI_API_SERVER)
-    openai_serving_chat = OpenAIServingChat(engine, served_model_names,
-                                            args.response_role,
-                                            args.lora_modules,
-                                            args.chat_template)
-    openai_serving_completion = OpenAIServingCompletion(
-        engine, served_model_names, args.lora_modules)
+    if args.enable_api_tools:
+        openai_tools_prompter = OpenAIToolsPrompter(privileged=args.privileged)
+        openai_serving_chat = OpenAIServingChat(engine, served_model_names,
+                                                args.response_role,
+                                                args.lora_modules,
+                                                args.chat_template,
+                                                openai_tools_prompter=openai_tools_prompter,
+                                                privileged=args.privileged)
+        openai_serving_completion = OpenAIServingCompletion(
+            engine, served_model_names, args.lora_modules)
+    
+    else:
+        openai_serving_chat = OpenAIServingChat(engine, served_model_names,
+                                                args.response_role,
+                                                args.lora_modules,
+                                                args.chat_template)
+        openai_serving_completion = OpenAIServingCompletion(
+            engine, served_model_names, args.lora_modules)
+
 
     app.root_path = args.root_path
     uvicorn.run(app,

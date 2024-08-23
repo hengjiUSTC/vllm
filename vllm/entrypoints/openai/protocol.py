@@ -4,7 +4,10 @@ import time
 from typing import Dict, List, Literal, Optional, Union
 
 import torch
-from openai.types.chat import ChatCompletionMessageParam
+from openai.types.chat import (ChatCompletionMessageParam,
+                               ChatCompletionToolParam,
+                               ChatCompletionMessageToolCall)
+from openai.types.chat.chat_completion_message_tool_call import Function
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing_extensions import Annotated
 
@@ -14,8 +17,18 @@ from vllm.utils import random_uuid
 
 class OpenAIBaseModel(BaseModel):
     # OpenAI API does not allow extra fields
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
+class ChatCompletionNamedFunction(OpenAIBaseModel):
+    name: str
+
+class ChatCompletionNamedToolChoiceParam(OpenAIBaseModel):
+    function: ChatCompletionNamedFunction
+    type: Literal["function"] = "function"
+
+class ToolChoiceDict(BaseModel):
+    type: str
+    function: Dict[str, str]
 
 class ErrorResponse(OpenAIBaseModel):
     object: str = "error"
@@ -65,6 +78,29 @@ class ResponseFormat(OpenAIBaseModel):
     # type must be "json_object" or "text"
     type: Literal["text", "json_object"]
 
+class VllmToolsTemplate(BaseModel):
+    # Extension to define the tools template. The strings may be empty but not None
+    call_token_start: str = "<|reserved004|>"
+    call_token_end: str = "<|reserved003|>"
+    tool_token_start: str = ""
+    tool_token_end: str = ""
+    response_token_start: str = ""
+    response_token_end: str = ""
+
+    tool_call_notif_noarg_start: str = ""
+    tool_call_notif_noarg_end: str = ""
+    tool_call_notif_args_start: str = ""
+    tool_call_notif_args_end: str = ""
+
+    function_guided: str = "You must call the following function at least one time to answer the question. You may call it multiple times if needed:"
+
+    function_list_start: str = """Available functions:"""
+
+    function_list_end: str = ""
+
+    function_call_instruct: str = ""
+
+
 
 class ChatCompletionRequest(OpenAIBaseModel):
     # Ordered by official OpenAI API documentation
@@ -89,6 +125,15 @@ class ChatCompletionRequest(OpenAIBaseModel):
     user: Optional[str] = None
 
     # doc: begin-chat-completion-sampling-params
+    tools: Optional[List[ChatCompletionToolParam]] = None
+    # tool_choice: Optional[Union[Literal["auto", "none"],
+                                # ChatCompletionNamedToolChoiceParam]] = "auto"
+
+    tool_choice: Optional[Union[Literal["auto", "none", "required"],
+                            ChatCompletionNamedToolChoiceParam,
+                            ToolChoiceDict]] = "auto"
+    # Additional parameters supported by vLLM
+    tool_params: Optional[VllmToolsTemplate] = None
     best_of: Optional[int] = None
     use_beam_search: Optional[bool] = False
     top_k: Optional[int] = -1
@@ -416,9 +461,17 @@ class CompletionStreamResponse(OpenAIBaseModel):
     usage: Optional[UsageInfo] = Field(default=None)
 
 
+class ChoiceDeltaToolCall(BaseModel):
+    index: int
+    id: str
+    type: str
+    function: Function
+
+
 class ChatMessage(OpenAIBaseModel):
     role: str
-    content: str
+    content: Optional[str] = None
+    tool_calls: Optional[List[ChatCompletionMessageToolCall]] = None
 
 
 class ChatCompletionResponseChoice(OpenAIBaseModel):
@@ -441,6 +494,7 @@ class ChatCompletionResponse(OpenAIBaseModel):
 class DeltaMessage(OpenAIBaseModel):
     role: Optional[str] = None
     content: Optional[str] = None
+    tool_calls: Optional[List[ChoiceDeltaToolCall]] = None
 
 
 class ChatCompletionResponseStreamChoice(OpenAIBaseModel):
